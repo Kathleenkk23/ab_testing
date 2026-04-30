@@ -1,4 +1,5 @@
-"""Results and metrics endpoint"""
+"""Results and metrics endpoint with logging and validation"""
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from app.database import get_db
 from app.models import Experiment
 from app.services.metrics import MetricsCalculator
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/results", tags=["results"])
 
 
@@ -36,7 +38,7 @@ class ResultsResponse(BaseModel):
 
 @router.get("/", response_model=ResultsResponse)
 def get_results(
-    experiment_id: int = Query(..., description="Experiment identifier"),
+    experiment_id: int = Query(..., gt=0, description="Experiment identifier (must be > 0)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -62,29 +64,53 @@ def get_results(
     - A `z_score` of ±1.96 or higher indicates p < 0.05
     - `p_value` < 0.05 means 95% confidence in the result
     
-    Returns detailed metrics for both 'control' and 'treatment' variants.
+    **Returns:** Detailed metrics for both 'control' and 'treatment' variants with statistical significance
+    
+    **Raises:**
+    - 404: Experiment not found
     """
-    # Verify experiment exists
-    experiment = db.query(Experiment).filter(
-        Experiment.id == experiment_id
-    ).first()
+    try:
+        logger.info(f"Retrieving results for experiment {experiment_id}")
+        
+        # Verify experiment exists
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            logger.warning(f"Results retrieval failed: Experiment {experiment_id} not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Experiment {experiment_id} not found"
+            )
+        
+        # Calculate metrics
+        logger.debug(f"Calculating metrics for experiment {experiment_id}")
+        metrics = MetricsCalculator.get_experiment_metrics(experiment_id, db)
+        
+        logger.info(f"Results retrieved successfully: control CR={metrics['control_conversion_rate']:.2%}, "
+                   f"treatment CR={metrics['treatment_conversion_rate']:.2%}, "
+                   f"significant={metrics['is_significant']}")
+        
+        return {
+            "experiment_id": experiment_id,
+            "experiment_name": experiment.name,
+            "control": metrics["control"],
+            "treatment": metrics["treatment"],
+            "control_conversion_rate": metrics["control_conversion_rate"],
+            "treatment_conversion_rate": metrics["treatment_conversion_rate"],
+            "uplift": metrics["uplift"],
+            "z_score": metrics["z_score"],
+            "p_value": metrics["p_value"],
+            "is_significant": metrics["is_significant"],
+            "alpha": metrics["alpha"]
+        }
     
-    if not experiment:
-        raise HTTPException(status_code=404, detail="Experiment not found")
-    
-    # Calculate metrics
-    metrics = MetricsCalculator.get_experiment_metrics(experiment_id, db)
-    
-    return {
-        "experiment_id": experiment_id,
-        "experiment_name": experiment.name,
-        "control": metrics["control"],
-        "treatment": metrics["treatment"],
-        "control_conversion_rate": metrics["control_conversion_rate"],
-        "treatment_conversion_rate": metrics["treatment_conversion_rate"],
-        "uplift": metrics["uplift"],
-        "z_score": metrics["z_score"],
-        "p_value": metrics["p_value"],
-        "is_significant": metrics["is_significant"],
-        "alpha": metrics["alpha"]
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving results: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error retrieving results"
+        )

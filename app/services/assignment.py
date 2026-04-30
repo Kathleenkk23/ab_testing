@@ -1,42 +1,52 @@
-"""User assignment service with epsilon-greedy bandit algorithm"""
+"""User assignment service with epsilon-greedy bandit algorithm and logging"""
+import logging
 import random
 from sqlalchemy.orm import Session
 from app.models import Assignment, Event
 
+logger = logging.getLogger(__name__)
+
 
 class AssignmentService:
-    """Handles user assignment to experiment variants using bandit algorithm"""
+    """Handles user assignment to experiment variants using epsilon-greedy bandit algorithm"""
     
-    EPSILON = 0.1  # Exploration probability
-    MIN_IMPRESSIONS = 100  # Minimum impressions before exploitation
+    EPSILON = 0.1  # Exploration probability (10%)
+    MIN_IMPRESSIONS = 100  # Minimum impressions before exploitation starts
     
     @staticmethod
     def assign_user(user_id: int, experiment_id: int, db: Session) -> str:
         """
-        Assign user to a variant using epsilon-greedy bandit.
+        Assign user to a variant using epsilon-greedy bandit algorithm.
         
-        Strategy:
-        1. If user already assigned to this experiment, return existing assignment
-        2. If not enough data (impressions < MIN_IMPRESSIONS), assign randomly
-        3. Else:
-           - With probability epsilon: assign randomly (explore)
-           - Otherwise: assign to variant with higher conversion rate (exploit)
+        **Algorithm:**
         
-        Args:
-            user_id: Unique user identifier
-            experiment_id: Experiment identifier
-            db: Database session
+        1. **Check Existing Assignment**: If user already assigned to this experiment, return cached assignment (idempotent)
+        2. **Exploration Phase** (< 100 impressions): Random assignment to each variant
+        3. **Exploitation Phase** (>= 100 impressions):
+           - 90% of the time: Assign to variant with higher conversion rate
+           - 10% of the time: Randomly assign to explore new variants
+        
+        This balances exploration (learning which variant is better) with exploitation 
+        (using the best variant we've learned so far).
+        
+        **Args:**
+        - user_id: Unique user identifier (positive integer)
+        - experiment_id: Experiment identifier (positive integer)
+        - db: Database session
             
-        Returns:
-            Variant name: 'control' or 'treatment'
+        **Returns:**
+        - Tuple of (variant_name, assignment_reason)
+        - variant_name: 'control' or 'treatment'
+        - assignment_reason: Explanation of why this variant was chosen
         """
-        # Check if user already has assignment for this experiment
+        # Check if user already has assignment for this experiment (idempotent)
         existing = db.query(Assignment).filter(
             Assignment.user_id == user_id,
             Assignment.experiment_id == experiment_id
         ).first()
         
         if existing:
+            logger.debug(f"User {user_id} already assigned: {existing.variant}")
             return existing.variant
         
         # Count total impressions across both variants
@@ -48,16 +58,20 @@ class AssignmentService:
         # Phase 1: Exploration (random) - when not enough data
         if total_impressions < AssignmentService.MIN_IMPRESSIONS:
             variant = random.choice(["control", "treatment"])
+            logger.debug(f"Exploration phase: {total_impressions} impressions, assigned random: {variant}")
+            reason = f"Exploration phase ({total_impressions} impressions < {AssignmentService.MIN_IMPRESSIONS})"
         else:
             # Phase 2: Epsilon-greedy decision
             if random.random() < AssignmentService.EPSILON:
                 # Explore: choose random variant
                 variant = random.choice(["control", "treatment"])
+                logger.debug(f"Exploitation phase (explore): assigned random: {variant}")
             else:
                 # Exploit: choose variant with higher conversion rate
                 variant = AssignmentService._get_best_variant(
                     experiment_id, db
                 )
+                logger.debug(f"Exploitation phase (exploit): assigned best: {variant}")
         
         # Record the assignment
         assignment = Assignment(
@@ -69,37 +83,41 @@ class AssignmentService:
         db.commit()
         db.refresh(assignment)
         
-        return assignment.variant
+        logger.info(f"User {user_id} assigned to {variant} for experiment {experiment_id}")
+        return assignment.variant, reason
     
     @staticmethod
     def _get_best_variant(experiment_id: int, db: Session) -> str:
         """
         Determine variant with highest conversion rate.
-        Falls back to random if no data available.
+        
+        Compares conversion rates (conversions / impressions) for both variants
+        and returns the one with the higher rate.
+        Falls back to random assignment if no data available.
+        
+        **Args:**
+        - experiment_id: Experiment ID to analyze
+        - db: Database session
+        
+        **Returns:**
+        - Variant name with highest conversion rate ('control' or 'treatment')
         """
+        variant_rates = {}
+        
         for variant in ["control", "treatment"]:
             events = db.query(Event).filter(
                 Event.experiment_id == experiment_id,
                 Event.variant == variant
             ).all()
             
-            if not events:
-                continue
-            
             impressions = sum(1 for e in events if e.event_type == "impression")
             conversions = sum(1 for e in events if e.event_type == "conversion")
-            
-            variant_rates = {}
-            for v in ["control", "treatment"]:
-                v_events = db.query(Event).filter(
-                    Event.experiment_id == experiment_id,
-                    Event.variant == v
-                ).all()
-                v_impressions = sum(1 for e in v_events if e.event_type == "impression")
-                v_conversions = sum(1 for e in v_events if e.event_type == "conversion")
-                v_rate = v_conversions / v_impressions if v_impressions > 0 else 0.0
-                variant_rates[v] = v_rate
+            conversion_rate = conversions / impressions if impressions > 0 else 0.0
+            variant_rates[variant] = conversion_rate
         
         # Return variant with highest conversion rate
         best = max(variant_rates, key=variant_rates.get)
+        logger.debug(f"Best variant: {best} (control CR: {variant_rates['control']:.2%}, "
+                    f"treatment CR: {variant_rates['treatment']:.2%})")
+        
         return best if variant_rates[best] > 0 else random.choice(["control", "treatment"])

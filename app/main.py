@@ -1,17 +1,28 @@
-"""FastAPI main application"""
-from fastapi import FastAPI
+"""FastAPI main application with logging and monitoring"""
+import logging
+import time
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
 from app.routes import experiment, assign, event, results
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Create database tables
+logger.info("Initializing database...")
 Base.metadata.create_all(bind=engine)
+logger.info("Database initialized successfully")
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Smart A/B Testing Platform",
-    description="A/B testing platform with epsilon-greedy bandit algorithm for intelligent variant assignment",
-    version="1.0.0"
+    description="A/B testing platform with epsilon-greedy bandit algorithm for intelligent variant assignment and statistical significance testing",
+    version="1.1.0"
 )
 
 # Add CORS middleware
@@ -22,6 +33,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add request timing middleware
+@app.middleware("http")
+async def add_request_timing(request: Request, call_next):
+    """Log request processing time and track metrics"""
+    start_time = time.time()
+    request_id = request.headers.get("X-Request-ID", "unknown")
+    
+    logger.info(f"[{request_id}] {request.method} {request.url.path}")
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    logger.info(f"[{request_id}] Completed in {process_time:.3f}s with status {response.status_code}")
+    
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
 
 # Include routers
 app.include_router(experiment.router)
