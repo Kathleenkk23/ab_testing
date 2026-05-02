@@ -12,13 +12,12 @@ router = APIRouter(prefix="/assign", tags=["assignment"])
 
 
 class AssignmentResponse(BaseModel):
-    """Response model for user assignment"""
-    user_id: int
-    experiment_id: int
-    variant: str
-    
-    class Config:
-        from_attributes = True
+    """Response model for user assignment with reasoning and next steps"""
+    user_id: int = Field(..., description="User ID")
+    experiment_id: int = Field(..., description="Experiment ID")
+    variant: str = Field(..., description="Assigned variant (control or treatment)")
+    assignment_reason: str = Field(..., description="Why this variant was assigned (exploration vs exploitation)")
+    next_steps: str = Field(..., description="Suggested next action")
 
 
 @router.get("/", response_model=AssignmentResponse)

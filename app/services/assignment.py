@@ -47,7 +47,7 @@ class AssignmentService:
         
         if existing:
             logger.debug(f"User {user_id} already assigned: {existing.variant}")
-            return existing.variant
+            return existing.variant, "User was previously assigned to this variant (cached result)"
         
         # Count total impressions across both variants
         total_impressions = db.query(Event).filter(
@@ -66,12 +66,14 @@ class AssignmentService:
                 # Explore: choose random variant
                 variant = random.choice(["control", "treatment"])
                 logger.debug(f"Exploitation phase (explore): assigned random: {variant}")
+                reason = f"Exploitation phase with exploration (random assignment)"
             else:
                 # Exploit: choose variant with higher conversion rate
                 variant = AssignmentService._get_best_variant(
                     experiment_id, db
                 )
                 logger.debug(f"Exploitation phase (exploit): assigned best: {variant}")
+                reason = f"Exploitation phase (exploit): assigned best performing variant"
         
         # Record the assignment
         assignment = Assignment(
