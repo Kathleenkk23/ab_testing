@@ -46,6 +46,129 @@ This mimics real-world experimentation systems used at companies like Meta, Goog
 
 👉 **Key Insight**: Distinguishes real improvements from random noise. Even if treatment performs 12% better, the result may not be statistically significant!
 
+### 5. 🎨 Creative Component System
+* **Creative Assets**: Store images, copy, HTML, videos, designs
+* **Variant Assignment**: Link creatives to experiment variants
+* **Auto-Detection**: Events automatically track which creative was served
+* **Creative Analytics**: Performance tracking per creative asset
+* **Real-World Testing**: Perfect for landing pages, ads, emails, product pages
+
+---
+
+## 🎨 Creative Component System
+
+### What Are Creative Components?
+
+Creative components are the actual content variations you test in A/B experiments:
+
+* **Images**: Product photos, banners, hero images
+* **Copy**: Headlines, descriptions, call-to-action text
+* **HTML**: Complete page sections, buttons, forms
+* **Design**: CSS styles, layouts, color schemes
+* **Video**: Video content, thumbnails, previews
+
+### Real-World Usage Examples
+
+#### 1. Landing Page Hero Banner Test
+```python
+# Create experiment
+experiment = requests.post("/experiment/", json={"name": "hero_banner_test"})
+
+# Create creative variations
+control_banner = requests.post("/creative/", json={
+    "name": "Hero Banner - Blue",
+    "creative_type": "html",
+    "content": "<div style='background: blue'>Welcome!</div>",
+    "metadata": {"color": "blue", "tone": "professional"}
+})
+
+treatment_banner = requests.post("/creative/", json={
+    "name": "Hero Banner - Orange",
+    "creative_type": "html",
+    "content": "<div style='background: orange'>🚀 Boost Productivity!</div>",
+    "metadata": {"color": "orange", "tone": "benefit-focused"}
+})
+
+# Assign creatives to variants
+requests.post("/creative/assign", json={
+    "experiment_id": experiment["id"],
+    "variant": "control",
+    "creative_id": control_banner["id"]
+})
+```
+
+#### 2. Integration in Your Application
+
+```python
+# 1. Assign user to experiment variant
+assignment = requests.get(f"/assign/?user_id={user_id}&experiment_id={exp_id}").json()
+
+# 2. Get creative for this variant
+creative = requests.get(f"/creative/variant/{exp_id}/{assignment['variant']}").json()
+
+# 3. Serve creative to user
+if creative:
+    # Render the creative content
+    html_content = creative["content"]
+    # ... display to user ...
+
+# 4. Track events (creative_id auto-detected)
+requests.post("/event/", json={
+    "user_id": user_id,
+    "experiment_id": exp_id,
+    "variant": assignment["variant"],
+    "event_type": "impression"
+})
+```
+
+### Creative API Endpoints
+
+#### Create Creative
+```http
+POST /creative/
+Content-Type: application/json
+
+{
+    "name": "Hero Banner A",
+    "description": "Blue gradient background",
+    "creative_type": "html",
+    "content": "<div style='background: blue'>Content</div>",
+    "metadata": {"color": "blue", "style": "gradient"}
+}
+```
+
+#### Assign Creative to Variant
+```http
+POST /creative/assign
+Content-Type: application/json
+
+{
+    "experiment_id": 1,
+    "variant": "treatment",
+    "creative_id": 5
+}
+```
+
+#### Get Creative for Variant
+```http
+GET /creative/variant/{experiment_id}/{variant}
+```
+
+#### Creative Usage Analytics
+```http
+GET /creative/{creative_id}/usage
+```
+
+### Creative Types Supported
+
+| Type | Description | Content Format | Examples |
+|------|-------------|----------------|----------|
+| `image` | Images, photos, graphics | URL or base64 | Product photos, banners |
+| `copy` | Text content, headlines | Plain text | Headlines, descriptions |
+| `html` | HTML snippets, components | HTML markup | Buttons, forms, sections |
+| `video` | Videos, animations | URL or embed code | Product demos, explainer videos |
+| `design` | Design specifications | JSON/CSS | Layout configs, themes |
+
 ---
 
 ## 🏗️ Architecture

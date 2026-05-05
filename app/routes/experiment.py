@@ -285,9 +285,197 @@ def experiment_status(experiment_id: int, db: Session = Depends(get_db)):
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error getting experiment status: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail="Internal server error getting experiment status"
+        )
+
+
+@router.put("/{experiment_id}/pause")
+def pause_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    ⏸️ Pause an experiment - Stop new user assignments while preserving existing data.
+    
+    **Use cases:**
+    - Temporarily halt traffic to test variants
+    - Pause during maintenance or issues
+    - Stop experiment before completion
+    
+    **What happens when paused:**
+    - New assignments return 403 Forbidden
+    - Existing assignments still work
+    - Event logging continues for existing users
+    - Can be resumed later
+    
+    **Returns:** Updated experiment status
+    """
+    try:
+        logger.info(f"Pausing experiment {experiment_id}")
+        
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {experiment_id} not found"
+            )
+        
+        if experiment.status == "paused":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Experiment {experiment_id} is already paused"
+            )
+        
+        experiment.status = "paused"
+        db.commit()
+        
+        logger.info(f"Experiment {experiment_id} paused successfully")
+        
+        return {
+            "experiment_id": experiment_id,
+            "status": "paused",
+            "message": "Experiment paused. New user assignments will be blocked.",
+            "next_actions": [
+                f"POST /experiment/{experiment_id}/resume to resume",
+                f"GET /experiment/{experiment_id}/status to check current state"
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error pausing experiment: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error pausing experiment"
+        )
+
+
+@router.put("/{experiment_id}/resume")
+def resume_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    ▶️ Resume a paused experiment - Allow new user assignments again.
+    
+    **Use cases:**
+    - Continue experiment after fixing issues
+    - Resume after maintenance
+    - Restart paused experiment
+    
+    **Returns:** Updated experiment status
+    """
+    try:
+        logger.info(f"Resuming experiment {experiment_id}")
+        
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {experiment_id} not found"
+            )
+        
+        if experiment.status != "paused":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Experiment {experiment_id} is not paused (current status: {experiment.status})"
+            )
+        
+        experiment.status = "active"
+        db.commit()
+        
+        logger.info(f"Experiment {experiment_id} resumed successfully")
+        
+        return {
+            "experiment_id": experiment_id,
+            "status": "active",
+            "message": "Experiment resumed. New user assignments are now allowed.",
+            "next_actions": [
+                f"GET /assign?user_id=123&experiment_id={experiment_id} to assign users",
+                f"GET /experiment/{experiment_id}/status to monitor progress"
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resuming experiment: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error resuming experiment"
+        )
+
+
+@router.put("/{experiment_id}/complete")
+def complete_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    ✅ Mark experiment as completed - Finalize results and prevent new assignments.
+    
+    **Use cases:**
+    - Experiment reached statistical significance
+    - Decision made based on results
+    - Time to implement winning variant
+    
+    **What happens when completed:**
+    - New assignments return 403 Forbidden
+    - Status shows as completed in all endpoints
+    - Historical data preserved
+    - Cannot be resumed (create new experiment instead)
+    
+    **Returns:** Completion confirmation with final stats
+    """
+    try:
+        logger.info(f"Completing experiment {experiment_id}")
+        
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {experiment_id} not found"
+            )
+        
+        if experiment.status == "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Experiment {experiment_id} is already completed"
+            )
+        
+        # Get final stats before marking complete
+        total_events = db.query(Event).filter(
+            Event.experiment_id == experiment_id
+        ).count()
+        
+        experiment.status = "completed"
+        db.commit()
+        
+        logger.info(f"Experiment {experiment_id} marked as completed")
+        
+        return {
+            "experiment_id": experiment_id,
+            "status": "completed",
+            "message": "Experiment completed successfully!",
+            "final_stats": {
+                "total_events_logged": total_events,
+                "completion_time": datetime.utcnow().isoformat()
+            },
+            "next_actions": [
+                f"GET /results?experiment_id={experiment_id} for final analysis",
+                f"POST /experiment/ to start a new experiment",
+                "Implement the winning variant in production!"
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing experiment: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error completing experiment"
         )

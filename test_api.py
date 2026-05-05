@@ -36,7 +36,7 @@ def test_health_check() -> bool:
     """Test health check endpoint."""
     print_section("1. Health Check")
     try:
-        response = requests.get(f"{BASE_URL}/")
+        response = requests.get(f"{BASE_URL}/health")
         response.raise_for_status()
         print_response("Health Status", response.json())
         return True

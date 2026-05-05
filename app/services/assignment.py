@@ -21,8 +21,9 @@ class AssignmentService:
         **Algorithm:**
         
         1. **Check Existing Assignment**: If user already assigned to this experiment, return cached assignment (idempotent)
-        2. **Exploration Phase** (< 100 impressions): Random assignment to each variant
-        3. **Exploitation Phase** (>= 100 impressions):
+        2. **Check Experiment Status**: If experiment is paused or completed, block new assignments
+        3. **Exploration Phase** (< 100 impressions): Random assignment to each variant
+        4. **Exploitation Phase** (>= 100 impressions):
            - 90% of the time: Assign to variant with higher conversion rate
            - 10% of the time: Randomly assign to explore new variants
         
@@ -39,6 +40,8 @@ class AssignmentService:
         - variant_name: 'control' or 'treatment'
         - assignment_reason: Explanation of why this variant was chosen
         """
+        from app.models import Experiment
+        
         # Check if user already has assignment for this experiment (idempotent)
         existing = db.query(Assignment).filter(
             Assignment.user_id == user_id,
@@ -48,6 +51,23 @@ class AssignmentService:
         if existing:
             logger.debug(f"User {user_id} already assigned: {existing.variant}")
             return existing.variant, "User was previously assigned to this variant (cached result)"
+        
+        # Check experiment status
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            logger.warning(f"Experiment {experiment_id} not found for user {user_id}")
+            raise ValueError(f"Experiment {experiment_id} not found")
+        
+        if experiment.status == "paused":
+            logger.warning(f"Attempted assignment to paused experiment {experiment_id}")
+            raise ValueError(f"Experiment {experiment_id} is paused - no new assignments allowed")
+        
+        if experiment.status == "completed":
+            logger.warning(f"Attempted assignment to completed experiment {experiment_id}")
+            raise ValueError(f"Experiment {experiment_id} is completed - no new assignments allowed")
         
         # Count total impressions across both variants
         total_impressions = db.query(Event).filter(

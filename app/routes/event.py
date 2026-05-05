@@ -1,10 +1,11 @@
 """Event logging endpoint with validation and monitoring"""
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
 from app.database import get_db
 from app.models import Event, Experiment
+from app.services.batch_processor import BatchEventProcessor
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/event", tags=["event"])
@@ -20,6 +21,7 @@ class EventCreate(BaseModel):
     experiment_id: int = Field(..., gt=0, description="Experiment ID (must be > 0)")
     variant: str = Field(..., description="Variant name (control or treatment)")
     event_type: str = Field(..., description="Event type (impression, click, or conversion)")
+    creative_id: int = Field(None, description="Creative ID (optional - auto-detected if not provided)")
     
     @validator('variant')
     def validate_variant(cls, v):
@@ -87,16 +89,28 @@ def log_event(event: EventCreate, db: Session = Depends(get_db)):
                 detail=f"Experiment {event.experiment_id} not found"
             )
         
+        # Auto-detect creative_id if not provided
+        creative_id = event.creative_id
+        if creative_id is None:
+            from app.services.creative import CreativeService
+            creative = CreativeService.get_creative_for_variant(
+                event.experiment_id, event.variant, db
+            )
+            if creative:
+                creative_id = creative["creative_id"]
+                logger.debug(f"Auto-detected creative_id {creative_id} for variant {event.variant}")
+        
         # Log event creation
         logger.info(f"Logging event: user {event.user_id}, experiment {event.experiment_id}, "
-                   f"variant {event.variant}, type {event.event_type}")
+                   f"variant {event.variant}, type {event.event_type}, creative {creative_id}")
         
         # Create and store event
         db_event = Event(
             user_id=event.user_id,
             experiment_id=event.experiment_id,
             variant=event.variant,
-            event_type=event.event_type
+            event_type=event.event_type,
+            creative_id=creative_id
         )
         db.add(db_event)
         db.commit()
@@ -152,41 +166,49 @@ def log_batch_events(events: list[EventCreate], db: Session = Depends(get_db)):
     
     logger.info(f"Starting batch event logging: {len(events)} events")
     
-    try:
-        for idx, event in enumerate(events):
-            try:
-                # Validate experiment exists
-                experiment = db.query(Experiment).filter(
-                    Experiment.id == event.experiment_id
-                ).first()
-                
-                if not experiment:
-                    failed += 1
-                    failed_events.append({
-                        "index": idx,
-                        "reason": f"Experiment {event.experiment_id} not found"
-                    })
-                    continue
-                
-                # Create event
-                db_event = Event(
-                    user_id=event.user_id,
-                    experiment_id=event.experiment_id,
-                    variant=event.variant,
-                    event_type=event.event_type
-                )
-                db.add(db_event)
-                successful += 1
-                
-            except Exception as e:
-                failed += 1
-                failed_events.append({
-                    "index": idx,
-                    "reason": str(e)
-                })
+    # Validate all events belong to the same experiment
+    if events:
+        experiment_ids = set(event.experiment_id for event in events)
+        if len(experiment_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="All events in batch must belong to the same experiment"
+            )
         
-        # Commit all at once
-        db.commit()
+        experiment_id = list(experiment_ids)[0]
+        
+        # Validate experiment exists
+        experiment = db.query(Experiment).filter(
+            Experiment.id == experiment_id
+        ).first()
+        
+        if not experiment:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {experiment_id} not found"
+            )
+    
+    try:
+        # Convert to dict format for batch processor
+        events_data = [
+            {
+                "user_id": event.user_id,
+                "variant": event.variant,
+                "event_type": event.event_type
+            }
+            for event in events
+        ]
+        
+        # Use high-performance batch processor
+        result = BatchEventProcessor.bulk_insert_events_sqlite(
+            events_data, experiment_id, db
+        )
+        
+        successful = result["processed"]
+        failed = result["failed"]
+        
+        if result["errors"]:
+            failed_events = result["errors"]
         
         logger.info(f"Batch event logging completed: {successful} success, {failed} failed")
         
